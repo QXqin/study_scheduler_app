@@ -1,5 +1,3 @@
 flet
 pyyaml
-requests
-openai
-ics
+httpx

@@ -1,13 +1,36 @@
+import traceback as _tb
 import flet as ft
-from datetime import datetime
-import json
-import yaml
 
-from core.ai_updater import update_config_with_nl
-from core.scheduler import generate_schedule, send_to_pushplus
-from core.import_ics import parse_ics_text
+# Wrap all imports in try-except so we can display errors on Android
+_import_error = None
+try:
+    from datetime import datetime
+    import json
+    import yaml
+    from core.ai_updater import update_config_with_nl
+    from core.scheduler import generate_schedule, send_to_pushplus
+    from core.import_ics import parse_ics_text
+except Exception as _e:
+    _import_error = f"{_e}\n\n{_tb.format_exc()}"
 
 def main(page: ft.Page):
+    # If imports failed, show the error immediately
+    if _import_error:
+        page.add(
+            ft.SafeArea(
+                ft.Column(
+                    [
+                        ft.Text("IMPORT ERROR", color="red", size=20, weight=ft.FontWeight.BOLD),
+                        ft.Text(_import_error, size=12, selectable=True),
+                    ],
+                    scroll=ft.ScrollMode.AUTO,
+                    expand=True,
+                )
+            )
+        )
+        page.update()
+        return
+
     try:
         page.title = "考研智能看板"
         page.theme_mode = ft.ThemeMode.LIGHT
@@ -145,7 +168,7 @@ def main(page: ft.Page):
                 
             ai_progress.visible = False
             ai_submit_btn.disabled = False
-            render_today() # update the first tab in background
+            render_today()
             page.update()
 
         ai_submit_btn = ft.ElevatedButton("✨ 让 AI 修改配置并重新排表", on_click=on_ai_submit)
@@ -166,7 +189,6 @@ def main(page: ft.Page):
         push_field = ft.TextField(label="Pushplus Token", value=push_token, password=True, can_reveal_password=True)
         
         def import_ics_result(e: ft.FilePickerResultEvent):
-            # file_picker uses cross-platform selection APIs
             if e.files and len(e.files):
                 file_path = e.files[0].path
                 if file_path:
@@ -237,14 +259,13 @@ def main(page: ft.Page):
         
         render_today()
     except Exception as e:
-        import traceback
         page.add(
             ft.SafeArea(
                 ft.Column(
                     [
                         ft.Text("FATAL ERROR ON STARTUP", color="red", size=20, weight=ft.FontWeight.BOLD),
                         ft.Text(str(e), color="red"),
-                        ft.Text(traceback.format_exc(), size=12, selectable=True)
+                        ft.Text(_tb.format_exc(), size=12, selectable=True)
                     ],
                     scroll=ft.ScrollMode.AUTO,
                     expand=True

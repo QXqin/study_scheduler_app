@@ -1,8 +1,7 @@
 import yaml
-import requests
-from openai import OpenAI
-from datetime import datetime, timedelta
 import json
+import httpx
+from datetime import datetime, timedelta
 
 def is_date_in_active_ranges(target_date, active_dates_str):
     if not active_dates_str: return True
@@ -49,11 +48,11 @@ def get_schedule_range():
 
 def generate_schedule(config: dict, api_key: str):
     start_date, end_date = get_schedule_range()
-    
+
     raw_fixed_classes = config.get('fixed_classes', [])
     filtered_classes = filter_active_classes(raw_fixed_classes, start_date, end_date)
     clean_classes = [{k:v for k,v in c.items() if k != 'active_dates'} for c in filtered_classes]
-    
+
     system_prompt = f"""你是一个顶级的考研时间管理和数据序列化专家。
 今天是 {datetime.now().strftime('%Y年%m月%d日')}。
 请你为用户生成从 {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')} 期间的详细学习时间计划表。
@@ -88,24 +87,34 @@ def generate_schedule(config: dict, api_key: str):
 }}
 请立刻输出涵盖 {start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')} 要求的纯 JSON。
 """
-    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
     try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "请输出纯 JSON，直接以 { 开头。"}
-            ],
-            temperature=0.1,
-            max_tokens=4000
+        resp = httpx.post(
+            "https://api.deepseek.com/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": "请输出纯 JSON，直接以 { 开头。"}
+                ],
+                "temperature": 0.1,
+                "max_tokens": 4000,
+            },
+            timeout=60,
         )
-        content = response.choices[0].message.content.strip()
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"].strip()
+
         if content.startswith("```json"): content = content[7:]
         if content.startswith("```"): content = content[3:]
         if content.endswith("```"): content = content[:-3]
         content = content.strip()
         schedule_data = json.loads(content)
-        
+
         markdown_str = ""
         for date_str, tasks in schedule_data.items():
             markdown_str += f"### 📅 {date_str}\n"
@@ -131,7 +140,7 @@ def send_to_pushplus(token: str, content: str):
         "template": "markdown"
     }
     try:
-        response = requests.post(url, json=data)
+        response = httpx.post(url, json=data, timeout=30)
         if response.status_code == 200 and response.json().get('code') == 200:
             return True, "推送成功"
         else:

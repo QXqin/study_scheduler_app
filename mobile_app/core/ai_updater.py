@@ -1,10 +1,11 @@
 import yaml
 import json
-from openai import OpenAI
+import httpx
 
 def update_config_with_nl(api_key: str, current_yaml_str: str, user_prompt: str):
     """
     Sends the current config as string and user prompt to DeepSeek, returning the updated YAML string.
+    Uses httpx directly instead of the openai SDK (which has pydantic-core Rust binary incompatible with Android).
     """
     system_prompt = f"""你是一个智能配置文件助理。
 下面是用户当前的考研时间安排配置文件（YAML格式）。
@@ -19,31 +20,39 @@ def update_config_with_nl(api_key: str, current_yaml_str: str, user_prompt: str)
 【当前配置】
 {current_yaml_str}
 """
-    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-    
     try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"我的修改要求是：{user_prompt}"}
-            ],
-            temperature=0.1,
-            max_tokens=4000
+        resp = httpx.post(
+            "https://api.deepseek.com/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"我的修改要求是：{user_prompt}"}
+                ],
+                "temperature": 0.1,
+                "max_tokens": 4000,
+            },
+            timeout=60,
         )
-        new_yaml_str = response.choices[0].message.content.strip()
-        
+        resp.raise_for_status()
+        data = resp.json()
+        new_yaml_str = data["choices"][0]["message"]["content"].strip()
+
         # 净化可能带有的 markdown code block tags
         if new_yaml_str.startswith("```yaml"): new_yaml_str = new_yaml_str[7:]
         if new_yaml_str.startswith("```"): new_yaml_str = new_yaml_str[3:]
         if new_yaml_str.endswith("```"): new_yaml_str = new_yaml_str[:-3]
         new_yaml_str = new_yaml_str.strip()
-            
+
         # 校验是否合法
         new_config = yaml.safe_load(new_yaml_str)
         if not isinstance(new_config, dict):
             raise ValueError("AI 返回了非字典的 YAML 结构")
-            
+
         return True, new_yaml_str
     except Exception as e:
         return False, f"处理失败：{e}"
