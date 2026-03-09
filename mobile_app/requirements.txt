@@ -1,0 +1,5 @@
+flet==0.24.1
+pyyaml
+requests
+openai
+ics
