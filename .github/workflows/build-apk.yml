@@ -34,11 +34,12 @@ jobs:
         yes | sdkmanager --licenses || true
 
     - name: Build APK
+      working-directory: mobile_app
       run: |
-        yes | flet build apk --verbose mobile_app/
+        yes | flet build apk --verbose
 
     - name: Upload APK to GitHub Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: study-scheduler-apk
-        path: build/apk/*.apk
+        path: mobile_app/build/apk/*.apk
