@@ -17,22 +17,9 @@ def is_date_in_active_ranges(target_date, active_dates_str):
     return False
 
 def filter_active_classes(fixed_classes, start_date, end_date):
-    active_classes = []
-    for cls in fixed_classes:
-        active_dates_str = cls.get('active_dates', '')
-        if not active_dates_str:
-            active_classes.append(cls)
-            continue
-        delta = end_date - start_date
-        is_active = False
-        for i in range(delta.days + 1):
-            check_date = start_date + timedelta(days=i)
-            if is_date_in_active_ranges(check_date, active_dates_str):
-                is_active = True
-                break
-        if is_active:
-            active_classes.append(cls)
-    return active_classes
+    # Bypass strict date filtering so that users importing old/test ICS files 
+    # will still see their classes scheduled based on the day of the week.
+    return fixed_classes
 
 def get_schedule_range():
     now = datetime.now()
