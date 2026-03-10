@@ -1,7 +1,7 @@
 import traceback as _tb
 import flet as ft
+import threading
 
-# Wrap all imports in try-except so we can display errors on Android
 _import_error = None
 try:
     from datetime import datetime
@@ -64,17 +64,15 @@ def main(page: ft.Page):
 
         storage = AppStorage()
 
+        # Check if onboarding is completed
+        is_onboarded = storage.get("is_onboarded") or False
+
+        # State Variables
         api_key = storage.get("api_key") or ""
         push_token = storage.get("push_token") or ""
         config_yaml_str = storage.get("config_yaml") or "api:\nuser_info:\nfixed_classes: []\npreferences: []\ntemp_tasks: []\n"
         schedule_data = storage.get("schedule_json") or {}
         progress_data = storage.get("progress_json") or {}
-
-        def save_settings(e):
-            storage.set("api_key", api_field.value)
-            storage.set("push_token", push_field.value)
-            page.snack_bar = ft.SnackBar(ft.Text("设置已保存！"), open=True)
-            page.update()
 
         def save_progress():
             storage.set("progress_json", progress_data)
@@ -88,6 +86,10 @@ def main(page: ft.Page):
             nonlocal schedule_data
             schedule_data = sd
             storage.set("schedule_json", sd)
+
+        # -----------------------------------------------------
+        # MAIN APP VIEWS
+        # -----------------------------------------------------
 
         # 1. 今日计划 View
         today_view = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, visible=True)
@@ -123,11 +125,61 @@ def main(page: ft.Page):
                     today_view.controls.append(cb)
             page.update()
 
+
         # 2. AI 调控中心 View
         ai_view = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, visible=False)
-        ai_prompt_field = ft.TextField(label="告诉 AI 你的安排修改，例如：明天晚上临时有个讲座", multiline=True, min_lines=3, max_lines=5)
+        ai_prompt_field = ft.TextField(label="告诉 AI 你的安排修改...", multiline=True, min_lines=3, max_lines=5)
         ai_status = ft.Text("", color=ft.Colors.RED_500)
         ai_progress = ft.ProgressRing(visible=False)
+        ai_submit_btn = ft.ElevatedButton("✨ 提交给 AI", disabled=False)
+
+        def run_ai_task(user_input):
+            try:
+                ak = storage.get("api_key")
+                pt = storage.get("push_token")
+                
+                # 1. Update config
+                success, new_yaml_str = update_config_with_nl(ak, config_yaml_str, user_input)
+                if not success:
+                    ai_status.value = new_yaml_str
+                    ai_status.color = ft.Colors.RED_500
+                else:
+                    save_config(new_yaml_str)
+                    ai_status.value = "配置已更新，正在生成排期..."
+                    page.update()
+
+                    # 2. Generate Schedule
+                    cfg = yaml.safe_load(new_yaml_str)
+                    success2, sd, md_str = generate_schedule(cfg, ak)
+
+                    if success2:
+                        save_schedule(sd)
+                        ai_status.value = "生成成功！正在推送..."
+                        page.update()
+
+                        # 3. Push
+                        if pt:
+                            ok, msg = send_to_pushplus(pt, md_str)
+                            if ok:
+                                ai_status.value = "✅ 排表已生成并推送微信！"
+                                ai_status.color = ft.Colors.GREEN_500
+                            else:
+                                ai_status.value = f"✅ 生成完毕 (推送失败: {msg})"
+                                ai_status.color = ft.Colors.ORANGE_500
+                        else:
+                            ai_status.value = "✅ 全新排表生成完毕！"
+                            ai_status.color = ft.Colors.GREEN_500
+                    else:
+                        ai_status.value = f"生成失败: {md_str}"
+                        ai_status.color = ft.Colors.RED_500
+            except Exception as e:
+                ai_status.value = f"发生系统错误: {e}"
+                ai_status.color = ft.Colors.RED_500
+            finally:
+                ai_progress.visible = False
+                ai_submit_btn.disabled = False
+                render_today()
+                page.update()
 
         def on_ai_submit(e):
             if not ai_prompt_field.value:
@@ -135,65 +187,25 @@ def main(page: ft.Page):
                 page.update()
                 return
 
-            ak = storage.get("api_key")
-            pt = storage.get("push_token")
-            if not ak:
-                ai_status.value = "请先在设置页填写 DeepSeek API Key"
+            if not storage.get("api_key"):
+                ai_status.value = "未配置 API Key"
                 page.update()
                 return
 
-            ai_status.value = "AI 正在理解你的意图..."
+            ai_status.value = "AI 正在思考中，请勿关闭应用..."
             ai_status.color = ft.Colors.BLUE_500
             ai_progress.visible = True
             ai_submit_btn.disabled = True
             page.update()
 
-            success, new_yaml_str = update_config_with_nl(ak, config_yaml_str, ai_prompt_field.value)
-            if not success:
-                ai_status.value = new_yaml_str
-                ai_status.color = ft.Colors.RED_500
-                ai_progress.visible = False
-                ai_submit_btn.disabled = False
-                page.update()
-                return
+            # Run slow network requests in a background thread to prevent UI freezing
+            t = threading.Thread(target=run_ai_task, args=(ai_prompt_field.value,))
+            t.start()
 
-            save_config(new_yaml_str)
-            ai_status.value = "配置已更新，正在唤醒调度引擎生成排单..."
-            page.update()
-
-            cfg = yaml.safe_load(new_yaml_str)
-            success2, sd, md_str = generate_schedule(cfg, ak)
-
-            if success2:
-                save_schedule(sd)
-                ai_status.value = "排期生成成功！正在推送微信..."
-                page.update()
-
-                if pt:
-                    ok, msg = send_to_pushplus(pt, md_str)
-                    if ok:
-                        ai_status.value = "✅ 全新排表生成完毕，已推送到微信！"
-                        ai_status.color = ft.Colors.GREEN_500
-                    else:
-                        ai_status.value = f"排表生成完毕，但推送失败：{msg}"
-                        ai_status.color = ft.Colors.ORANGE_500
-                else:
-                    ai_status.value = "✅ 全新排表生成完毕！未配置推送。"
-                    ai_status.color = ft.Colors.GREEN_500
-            else:
-                ai_status.value = f"生成失败: {md_str}"
-                ai_status.color = ft.Colors.RED_500
-
-            ai_progress.visible = False
-            ai_submit_btn.disabled = False
-            render_today()
-            page.update()
-
-        ai_submit_btn = ft.ElevatedButton("✨ 让 AI 修改配置并重新排表", on_click=on_ai_submit)
+        ai_submit_btn.on_click = on_ai_submit
 
         ai_view.controls.extend([
-            ft.Text("🤖 AI日程调控中心", size=24, weight=ft.FontWeight.BOLD),
-            ft.Text("不需要手动修改配置了，你需要做什么改变，直接在这里告诉 AI！", color=ft.Colors.GREY_600),
+            ft.Text("🤖 AI 日程调控", size=24, weight=ft.FontWeight.BOLD),
             ft.Divider(),
             ai_prompt_field,
             ft.Row([ai_submit_btn]),
@@ -202,10 +214,16 @@ def main(page: ft.Page):
 
         # 3. 应用设置 View
         settings_view = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, visible=False)
-        api_field = ft.TextField(label="DeepSeek API Key", value=api_key, password=True, can_reveal_password=True)
-        push_field = ft.TextField(label="Pushplus Token", value=push_token, password=True, can_reveal_password=True)
+        set_api_field = ft.TextField(label="DeepSeek API Key", value=api_key, password=True, can_reveal_password=True)
+        set_push_field = ft.TextField(label="Pushplus Token", value=push_token, password=True, can_reveal_password=True)
 
-        def import_ics_result(e: ft.FilePickerResultEvent):
+        def save_settings(e):
+            storage.set("api_key", set_api_field.value)
+            storage.set("push_token", set_push_field.value)
+            page.snack_bar = ft.SnackBar(ft.Text("设置已保存！"), open=True)
+            page.update()
+
+        def import_ics_result_settings(e: ft.FilePickerResultEvent):
             if e.files and len(e.files):
                 file_path = e.files[0].path
                 if file_path:
@@ -213,32 +231,31 @@ def main(page: ft.Page):
                         with open(file_path, "r", encoding="utf-8") as f:
                             ics_text = f.read()
                         classes = parse_ics_text(ics_text)
-                        cfg = yaml.safe_load(config_yaml_str)
-                        if not cfg: cfg = {}
+                        cfg = yaml.safe_load(config_yaml_str) or {}
                         cfg['fixed_classes'] = classes
-                        new_yaml = yaml.dump(cfg, allow_unicode=True, sort_keys=False)
-                        save_config(new_yaml)
-                        page.snack_bar = ft.SnackBar(ft.Text(f"成功导入 {len(classes)} 节课程并写入配置！"), open=True)
+                        save_config(yaml.dump(cfg, allow_unicode=True, sort_keys=False))
+                        page.snack_bar = ft.SnackBar(ft.Text(f"成功导入 {len(classes)} 节课程！"), open=True)
                         page.update()
                     except Exception as ex:
                         page.snack_bar = ft.SnackBar(ft.Text(f"导入失败: {ex}"), open=True)
                         page.update()
 
-        file_picker = ft.FilePicker(on_result=import_ics_result)
-        page.overlay.append(file_picker)
+        sett_file_picker = ft.FilePicker(on_result=import_ics_result_settings)
+        page.overlay.append(sett_file_picker)
 
         settings_view.controls.extend([
-            ft.Text("⚙️ 应用全局设置", size=24, weight=ft.FontWeight.BOLD),
+            ft.Text("⚙️ 应用设置", size=24, weight=ft.FontWeight.BOLD),
             ft.Divider(),
-            api_field,
-            push_field,
+            set_api_field,
+            set_push_field,
             ft.ElevatedButton("保存设置", on_click=save_settings, icon=ft.Icons.SAVE),
             ft.Divider(),
-            ft.Text("课表导入 (导入后会合并/覆盖当前的固定课内容)", color=ft.Colors.GREY_600),
-            ft.ElevatedButton("导入 .ics 课表文件", on_click=lambda _: file_picker.pick_files(allowed_extensions=["ics"]), icon=ft.Icons.UPLOAD_FILE)
+            ft.Text("导入 .ics 课表会覆盖当前的固定课", color=ft.Colors.GREY_600),
+            ft.ElevatedButton("重新导入课表", on_click=lambda _: sett_file_picker.pick_files(allowed_extensions=["ics"]), icon=ft.Icons.UPLOAD_FILE)
         ])
 
-        # Navigation
+
+        # --- NAVIGATION ---
         def on_nav_change(e):
             today_view.visible = e.control.selected_index == 0
             ai_view.visible = e.control.selected_index == 1
@@ -247,25 +264,116 @@ def main(page: ft.Page):
                 render_today()
             page.update()
 
-        page.navigation_bar = ft.NavigationBar(
+        main_nav_bar = ft.NavigationBar(
             destinations=[
-                ft.NavigationDestination(icon=ft.Icons.CHECK_CIRCLE_OUTLINE, label="今日计划"),
-                ft.NavigationDestination(icon=ft.Icons.SMART_TOY, label="AI 调控"),
-                ft.NavigationDestination(icon=ft.Icons.SETTINGS, label="设置"),
+                ft.NavigationBarDestination(icon=ft.Icons.CHECK_CIRCLE_OUTLINE, label="今日"),
+                ft.NavigationBarDestination(icon=ft.Icons.SMART_TOY, label="调控"),
+                ft.NavigationBarDestination(icon=ft.Icons.SETTINGS, label="设置"),
             ],
             on_change=on_nav_change
         )
 
-        page.add(
-            ft.SafeArea(
-                ft.Container(
-                    content=ft.Stack([today_view, ai_view, settings_view]),
-                    padding=10,
-                    expand=True
-                )
+        main_app_container = ft.SafeArea(
+            ft.Container(
+                content=ft.Stack([today_view, ai_view, settings_view]),
+                padding=10,
+                expand=True
             )
         )
-        render_today()
+
+
+        # -----------------------------------------------------
+        # ONBOARDING WIZARD VIEWS
+        # -----------------------------------------------------
+
+        wizard_container = ft.Column(expand=True, alignment=ft.MainAxisAlignment.CENTER)
+        
+        # Wizard State
+        wiz_api = ft.TextField(label="DeepSeek API Key (必填)", password=True, can_reveal_password=True)
+        wiz_push = ft.TextField(label="Pushplus Token (选填)", password=True, can_reveal_password=True)
+        wiz_status = ft.Text("", color=ft.Colors.RED_500)
+        wiz_ics_status = ft.Text("尚未导入", color=ft.Colors.GREY_500)
+        
+        def finish_onboarding(e):
+            if not wiz_api.value:
+                wiz_status.value = "必须填写 API Key 才能使用 AI 排期功能"
+                page.update()
+                return
+                
+            storage.set("api_key", wiz_api.value)
+            storage.set("push_token", wiz_push.value)
+            storage.set("is_onboarded", True)
+            
+            # Transition to main app
+            page.controls.clear()
+            page.navigation_bar = main_nav_bar
+            page.add(main_app_container)
+            render_today()
+            page.update()
+            
+            # Auto trigger first generation if API key is present
+            page.snack_bar = ft.SnackBar(ft.Text("正在为您首次初始化智能课表，请稍候..."), open=True)
+            page.update()
+            t = threading.Thread(target=run_ai_task, args=("首次生成排期",))
+            t.start()
+            
+
+        def import_ics_result_wiz(e: ft.FilePickerResultEvent):
+            if e.files and len(e.files):
+                file_path = e.files[0].path
+                if file_path:
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            ics_text = f.read()
+                        classes = parse_ics_text(ics_text)
+                        
+                        cfg = yaml.safe_load(config_yaml_str) or {}
+                        cfg['fixed_classes'] = classes
+                        save_config(yaml.dump(cfg, allow_unicode=True, sort_keys=False))
+                        
+                        wiz_ics_status.value = f"✅ 已成功导入 {len(classes)} 节课程"
+                        wiz_ics_status.color = ft.Colors.GREEN_500
+                        page.update()
+                    except Exception as ex:
+                        wiz_ics_status.value = f"❌ 导入失败: {ex}"
+                        wiz_ics_status.color = ft.Colors.RED_500
+                        page.update()
+
+        wiz_file_picker = ft.FilePicker(on_result=import_ics_result_wiz)
+        page.overlay.append(wiz_file_picker)
+
+        # Wizard Step 1: Welcome & Keys
+        step1 = ft.Column([
+            ft.Text("欢迎使用考研智能看板", size=28, weight=ft.FontWeight.BOLD),
+            ft.Text("为了让 AI 为您自动安排日程，我们需要初始化一些基础配置。", color=ft.Colors.GREY_700),
+            ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
+            wiz_api,
+            wiz_push,
+            ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
+            ft.Text("固定的大学课表 (选填)：", weight=ft.FontWeight.BOLD),
+            ft.Row([
+                ft.ElevatedButton("导入 .ics 文件", icon=ft.Icons.UPLOAD_FILE, on_click=lambda _: wiz_file_picker.pick_files(allowed_extensions=["ics"])),
+                wiz_ics_status
+            ]),
+            ft.Divider(height=30, color=ft.Colors.TRANSPARENT),
+            wiz_status,
+            ft.ElevatedButton("完成初始化并生成课表 ->", on_click=finish_onboarding, width=400, style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE))
+        ], alignment=ft.MainAxisAlignment.CENTER)
+
+        wizard_container.controls.append(step1)
+
+
+        # -----------------------------------------------------
+        # APP ENTRY LOGIC
+        # -----------------------------------------------------
+
+        if is_onboarded:
+            page.navigation_bar = main_nav_bar
+            page.add(main_app_container)
+            render_today()
+        else:
+            page.add(ft.SafeArea(wizard_container))
+            
     except Exception as e:
         page.add(
             ft.SafeArea(

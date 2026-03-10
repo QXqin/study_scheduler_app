@@ -53,16 +53,18 @@ def generate_schedule(config: dict, api_key: str):
     filtered_classes = filter_active_classes(raw_fixed_classes, start_date, end_date)
     clean_classes = [{k:v for k,v in c.items() if k != 'active_dates'} for c in filtered_classes]
 
+    user_info = config.get('user_info') or {}
+    
     system_prompt = f"""你是一个顶级的考研时间管理和数据序列化专家。
 今天是 {datetime.now().strftime('%Y年%m月%d日')}。
 请你为用户生成从 {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')} 期间的详细学习时间计划表。
 
 【用户基础画像】
-身份：{config.get('user_info', {}).get('role', '')}
-目标：{config.get('user_info', {}).get('goal', '')}
-备考科目：{config.get('user_info', {}).get('target_majors', '')}
-活跃时间：{config.get('user_info', {}).get('daily_active_hours', '')}
-固定休息：{config.get('user_info', {}).get('meal_and_rest', '')}
+身份：{user_info.get('role', '')}
+目标：{user_info.get('goal', '')}
+备考科目：{user_info.get('target_majors', '')}
+活跃时间：{user_info.get('daily_active_hours', '')}
+固定休息：{user_info.get('meal_and_rest', '')}
 
 【过滤后的有效本期课表】
 {yaml.dump(clean_classes, allow_unicode=True)}
