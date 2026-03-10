@@ -7,6 +7,9 @@ def update_config_with_nl(api_key: str, current_yaml_str: str, user_prompt: str)
     Sends the current config as string and user prompt to DeepSeek, returning the updated YAML string.
     Uses httpx directly instead of the openai SDK (which has pydantic-core Rust binary incompatible with Android).
     """
+    from datetime import datetime
+    now_str = datetime.now().strftime('%Y年%m月%d日 %H:%M:%S (%A)')
+    
     system_prompt = f"""你是一个智能配置文件助理。
 下面是用户当前的考研时间安排配置文件（YAML格式）。
 用户会对这个配置提出自然语言修改要求（比如增加一个临时待办、修改偏好、删除某个任务）。
@@ -16,6 +19,9 @@ def update_config_with_nl(api_key: str, current_yaml_str: str, user_prompt: str)
 1. 你的回答**只能包含 YAML 文本**本身，不要包裹在 ```yaml ... ``` 中，不要有任何前言后语。
 2. 绝对不能破坏原有的数据结构基础节点。
 3. YAML 必须合法，缩进正确。
+
+【当前真实时间】
+今天是：{now_str}。如果用户提到“今天”、“明天”、“后天”、“本周四”、“12点”，请以此为基准进行相对时间计算或绝对日期转换。
 
 【当前配置】
 {current_yaml_str}
