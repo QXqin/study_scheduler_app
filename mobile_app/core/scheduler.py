@@ -46,7 +46,7 @@ def get_schedule_range():
         end_date = today + timedelta(days=(6 - weekday))
     return start_date, end_date
 
-def generate_schedule(config: dict, api_key: str):
+def generate_schedule(config: dict, api_key: str, custom_prompt: str = ""):
     start_date, end_date = get_schedule_range()
 
     raw_fixed_classes = config.get('fixed_classes', [])
@@ -55,9 +55,23 @@ def generate_schedule(config: dict, api_key: str):
 
     user_info = config.get('user_info') or {}
     
+    # 构造考研天数范围与对应星期，方便 AI 匹配固定课表
+    weekdays_zh = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    date_context = []
+    delta = end_date - start_date
+    for i in range(delta.days + 1):
+        cur_date = start_date + timedelta(days=i)
+        date_context.append(f"{cur_date.strftime('%Y-%m-%d')} ({weekdays_zh[cur_date.weekday()]})")
+    date_context_str = "\n".join(date_context)
+    
+    custom_rule_block = f"\n【用户自定义强化提示词】\n{custom_prompt}\n" if custom_prompt else ""
+    
     system_prompt = f"""你是一个顶级的考研时间管理和数据序列化专家。
 今天是 {datetime.now().strftime('%Y年%m月%d日')}。
 请你为用户生成从 {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')} 期间的详细学习时间计划表。
+
+【目标排单日期与对应星期】
+{date_context_str}
 
 【用户基础画像】
 身份：{user_info.get('role', '')}
@@ -66,14 +80,15 @@ def generate_schedule(config: dict, api_key: str):
 活跃时间：{user_info.get('daily_active_hours', '')}
 固定休息：{user_info.get('meal_and_rest', '')}
 
-【过滤后的有效本期课表】
+【过滤后的有效本期课表（绝对约束）】
 {yaml.dump(clean_classes, allow_unicode=True)}
+注意：上面是用户本周【必须去上的固定大学课程（type: "class"）】。你**必须根据对应的星期几（day字段）**，将这些课程原封不动地插入到对应日期的时间轴中！这是最高优先级！然后，在除了上课和休息时间之外的空余时段，安排考研复习（type: "study"）。
 
 【本期突发待办与预估通勤】
 {yaml.dump(config.get('temp_tasks', []), allow_unicode=True)}
 
 【排班偏好与绝对约束】
-{yaml.dump(config.get('preferences', []), allow_unicode=True)}
+{yaml.dump(config.get('preferences', []), allow_unicode=True)}{custom_rule_block}
 
 【强制输出结构协议】
 1. 绝对禁止输出任何 Markdown 格式或解释性说明。

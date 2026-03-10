@@ -64,12 +64,11 @@ def main(page: ft.Page):
 
         storage = AppStorage()
 
-        # Check if onboarding is completed
         is_onboarded = storage.get("is_onboarded") or False
 
-        # State Variables
         api_key = storage.get("api_key") or ""
         push_token = storage.get("push_token") or ""
+        custom_prompt = storage.get("custom_prompt") or ""
         config_yaml_str = storage.get("config_yaml") or "api:\nuser_info:\nfixed_classes: []\npreferences: []\ntemp_tasks: []\n"
         schedule_data = storage.get("schedule_json") or {}
         progress_data = storage.get("progress_json") or {}
@@ -91,7 +90,6 @@ def main(page: ft.Page):
         # MAIN APP VIEWS
         # -----------------------------------------------------
 
-        # 1. 今日计划 View
         today_view = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, visible=True)
 
         def render_today():
@@ -125,60 +123,69 @@ def main(page: ft.Page):
                     today_view.controls.append(cb)
             page.update()
 
-
-        # 2. AI 调控中心 View
         ai_view = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, visible=False)
         ai_prompt_field = ft.TextField(label="告诉 AI 你的安排修改...", multiline=True, min_lines=3, max_lines=5)
         ai_status = ft.Text("", color=ft.Colors.RED_500)
         ai_progress = ft.ProgressRing(visible=False)
         ai_submit_btn = ft.ElevatedButton("✨ 提交给 AI", disabled=False)
 
-        def run_ai_task(user_input):
+        def run_ai_task(user_input, is_first_time=False):
             try:
                 ak = storage.get("api_key")
                 pt = storage.get("push_token")
+                cp = storage.get("custom_prompt") or ""
                 
-                # 1. Update config
-                success, new_yaml_str = update_config_with_nl(ak, config_yaml_str, user_input)
-                if not success:
-                    ai_status.value = new_yaml_str
-                    ai_status.color = ft.Colors.RED_500
-                else:
+                if not is_first_time:
+                    success, new_yaml_str = update_config_with_nl(ak, config_yaml_str, user_input)
+                    if not success:
+                        ai_status.value = new_yaml_str
+                        ai_status.color = ft.Colors.RED_500
+                        return
                     save_config(new_yaml_str)
-                    ai_status.value = "配置已更新，正在生成排期..."
-                    page.update()
+                    if not is_first_time:
+                        ai_status.value = "配置已更新，正在生成排期..."
+                        page.update()
 
-                    # 2. Generate Schedule
-                    cfg = yaml.safe_load(new_yaml_str)
-                    success2, sd, md_str = generate_schedule(cfg, ak)
+                cfg = yaml.safe_load(config_yaml_str)
+                success2, sd, md_str = generate_schedule(cfg, ak, custom_prompt=cp)
 
-                    if success2:
-                        save_schedule(sd)
+                if success2:
+                    save_schedule(sd)
+                    if not is_first_time:
                         ai_status.value = "生成成功！正在推送..."
                         page.update()
 
-                        # 3. Push
-                        if pt:
-                            ok, msg = send_to_pushplus(pt, md_str)
+                    if pt:
+                        ok, msg = send_to_pushplus(pt, md_str)
+                        if not is_first_time:
                             if ok:
                                 ai_status.value = "✅ 排表已生成并推送微信！"
                                 ai_status.color = ft.Colors.GREEN_500
                             else:
                                 ai_status.value = f"✅ 生成完毕 (推送失败: {msg})"
                                 ai_status.color = ft.Colors.ORANGE_500
-                        else:
+                    else:
+                        if not is_first_time:
                             ai_status.value = "✅ 全新排表生成完毕！"
                             ai_status.color = ft.Colors.GREEN_500
-                    else:
+                else:
+                    if not is_first_time:
                         ai_status.value = f"生成失败: {md_str}"
                         ai_status.color = ft.Colors.RED_500
             except Exception as e:
-                ai_status.value = f"发生系统错误: {e}"
-                ai_status.color = ft.Colors.RED_500
+                if not is_first_time:
+                    ai_status.value = f"发生系统错误: {e}"
+                    ai_status.color = ft.Colors.RED_500
             finally:
-                ai_progress.visible = False
-                ai_submit_btn.disabled = False
-                render_today()
+                if is_first_time:
+                    page.controls.clear()
+                    page.navigation_bar = main_nav_bar
+                    page.add(main_app_container)
+                    render_today()
+                else:
+                    ai_progress.visible = False
+                    ai_submit_btn.disabled = False
+                    render_today()
                 page.update()
 
         def on_ai_submit(e):
@@ -198,8 +205,7 @@ def main(page: ft.Page):
             ai_submit_btn.disabled = True
             page.update()
 
-            # Run slow network requests in a background thread to prevent UI freezing
-            t = threading.Thread(target=run_ai_task, args=(ai_prompt_field.value,))
+            t = threading.Thread(target=run_ai_task, args=(ai_prompt_field.value, False))
             t.start()
 
         ai_submit_btn.on_click = on_ai_submit
@@ -216,10 +222,12 @@ def main(page: ft.Page):
         settings_view = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, visible=False)
         set_api_field = ft.TextField(label="DeepSeek API Key", value=api_key, password=True, can_reveal_password=True)
         set_push_field = ft.TextField(label="Pushplus Token", value=push_token, password=True, can_reveal_password=True)
+        set_custom_prompt = ft.TextField(label="AI 排单专属提示词（例如：我绝不在早上背英语）", value=custom_prompt, multiline=True, min_lines=2, max_lines=4)
 
         def save_settings(e):
             storage.set("api_key", set_api_field.value)
             storage.set("push_token", set_push_field.value)
+            storage.set("custom_prompt", set_custom_prompt.value)
             page.snack_bar = ft.SnackBar(ft.Text("设置已保存！"), open=True)
             page.update()
 
@@ -231,9 +239,11 @@ def main(page: ft.Page):
                         with open(file_path, "r", encoding="utf-8") as f:
                             ics_text = f.read()
                         classes = parse_ics_text(ics_text)
+                        
                         cfg = yaml.safe_load(config_yaml_str) or {}
                         cfg['fixed_classes'] = classes
                         save_config(yaml.dump(cfg, allow_unicode=True, sort_keys=False))
+                        
                         page.snack_bar = ft.SnackBar(ft.Text(f"成功导入 {len(classes)} 节课程！"), open=True)
                         page.update()
                     except Exception as ex:
@@ -248,12 +258,12 @@ def main(page: ft.Page):
             ft.Divider(),
             set_api_field,
             set_push_field,
+            set_custom_prompt,
             ft.ElevatedButton("保存设置", on_click=save_settings, icon=ft.Icons.SAVE),
             ft.Divider(),
             ft.Text("导入 .ics 课表会覆盖当前的固定课", color=ft.Colors.GREY_600),
             ft.ElevatedButton("重新导入课表", on_click=lambda _: sett_file_picker.pick_files(allowed_extensions=["ics"]), icon=ft.Icons.UPLOAD_FILE)
         ])
-
 
         # --- NAVIGATION ---
         def on_nav_change(e):
@@ -281,18 +291,30 @@ def main(page: ft.Page):
             )
         )
 
-
         # -----------------------------------------------------
-        # ONBOARDING WIZARD VIEWS
+        # ONBOARDING WIZARD & LOADING VIEWS
         # -----------------------------------------------------
 
         wizard_container = ft.Column(expand=True, alignment=ft.MainAxisAlignment.CENTER)
         
-        # Wizard State
         wiz_api = ft.TextField(label="DeepSeek API Key (必填)", password=True, can_reveal_password=True)
         wiz_push = ft.TextField(label="Pushplus Token (选填)", password=True, can_reveal_password=True)
         wiz_status = ft.Text("", color=ft.Colors.RED_500)
         wiz_ics_status = ft.Text("尚未导入", color=ft.Colors.GREY_500)
+        
+        # Loading Page
+        loading_view = ft.SafeArea(
+            ft.Column(
+                [
+                    ft.ProgressRing(),
+                    ft.Text("AI 正在为您首次初始化智能课表...", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text("由于需要深度分析您的偏好和课表，这可能需要几十秒时间，请勿关闭应用。", color=ft.Colors.GREY_600, text_align=ft.TextAlign.CENTER)
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                expand=True
+            )
+        )
         
         def finish_onboarding(e):
             if not wiz_api.value:
@@ -302,19 +324,14 @@ def main(page: ft.Page):
                 
             storage.set("api_key", wiz_api.value)
             storage.set("push_token", wiz_push.value)
+            storage.set("custom_prompt", "")
             storage.set("is_onboarded", True)
             
-            # Transition to main app
             page.controls.clear()
-            page.navigation_bar = main_nav_bar
-            page.add(main_app_container)
-            render_today()
+            page.add(loading_view)
             page.update()
             
-            # Auto trigger first generation if API key is present
-            page.snack_bar = ft.SnackBar(ft.Text("正在为您首次初始化智能课表，请稍候..."), open=True)
-            page.update()
-            t = threading.Thread(target=run_ai_task, args=("首次生成排期",))
+            t = threading.Thread(target=run_ai_task, args=("首次生成排期", True))
             t.start()
             
 
@@ -332,7 +349,7 @@ def main(page: ft.Page):
                         save_config(yaml.dump(cfg, allow_unicode=True, sort_keys=False))
                         
                         wiz_ics_status.value = f"✅ 已成功导入 {len(classes)} 节课程"
-                        wiz_ics_status.color = ft.Colors.GREEN_500
+                        wiz_ics_status.color=ft.Colors.GREEN_500
                         page.update()
                     except Exception as ex:
                         wiz_ics_status.value = f"❌ 导入失败: {ex}"
@@ -342,7 +359,6 @@ def main(page: ft.Page):
         wiz_file_picker = ft.FilePicker(on_result=import_ics_result_wiz)
         page.overlay.append(wiz_file_picker)
 
-        # Wizard Step 1: Welcome & Keys
         step1 = ft.Column([
             ft.Text("欢迎使用考研智能看板", size=28, weight=ft.FontWeight.BOLD),
             ft.Text("为了让 AI 为您自动安排日程，我们需要初始化一些基础配置。", color=ft.Colors.GREY_700),
@@ -357,7 +373,7 @@ def main(page: ft.Page):
             ]),
             ft.Divider(height=30, color=ft.Colors.TRANSPARENT),
             wiz_status,
-            ft.ElevatedButton("完成初始化并生成课表 ->", on_click=finish_onboarding, width=400, style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE))
+            ft.ElevatedButton("完成初始化 ->", on_click=finish_onboarding, width=400, style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE))
         ], alignment=ft.MainAxisAlignment.CENTER)
 
         wizard_container.controls.append(step1)
